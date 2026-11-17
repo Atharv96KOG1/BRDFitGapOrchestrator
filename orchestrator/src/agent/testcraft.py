@@ -13,24 +13,21 @@ from src.agent.brd import is_storage_key
 # forwarded; TestCraft opens its own upload box for it instead.
 TESTCRAFT_EXTENSIONS = (".xlsx", ".docx", ".txt", ".md")
 
-# The only two statuses TestCraft returns from its registered function, in
-# src/agent/agents.py: :512 on the single-document success path, :23 from
-# `_cancelled` for a rejected or timed-out review gate, and :775 for a multi-document
-# run, which is success when at least one document was produced and cancelled when
-# none was. A child run's result is narrowed at :893 but never leaves the agent.
-# An unknown status raises on purpose: stop and re-check rather than report an
-# outcome this orchestrator has not seen.
+# The only two statuses TestCraft's registered function returns: "success" from its
+# single- and multi-document paths, and "cancelled" from `_cancelled`, which covers a
+# rejected or timed-out review gate and a multi-document run that produced nothing.
+# An unknown status raises on purpose: stop and re-check rather than report an outcome
+# this orchestrator has not seen.
 _RESULT_STATUSES = ("success", "cancelled")
 
 
 def build_testcraft_payload(document: Any) -> dict[str, Any]:
     """Start TestCraft and let it collect and check its own files.
 
-    `generate` is TestCraft's own start flag (agents.py :815). A file is forwarded
-    only when TestCraft accepts the type; with nothing usable it opens its own upload
-    box (agents.py :899), the same way BRDGen collects its own inputs. `uploaded_files`
-    is the first key TestCraft reads (agents.py :849) and the only one that is always
-    a storage key rather than a display name.
+    `generate` is TestCraft's own start flag. A file is forwarded only when TestCraft
+    accepts the type; handed nothing usable it opens its own upload box, the same way
+    BRDGen collects its own inputs. `uploaded_files` is the key it reads first, and the
+    only one that is always a storage key rather than a display name.
 
     No task_metadata, customer_id or user_id: nothing in explora_polaris reads them.
     TestCraft's review cards reach the conversation through the child run record the
@@ -68,9 +65,9 @@ def validate_testcraft_result(result: Any) -> dict[str, Any]:
 def testcraft_artifacts(result: dict[str, Any]) -> list[dict[str, Any]]:
     """TestCraft's own download cards.
 
-    `results` holds the combined workbook first and then one per document
-    (agents.py :787); a single-document run returns the one workbook in both places
-    (agents.py :514), so the flat field is the fallback rather than an addition.
+    `results` holds the combined workbook first and then one per document, and a
+    single-document run returns that one workbook in both `results` and
+    `test_cases_document`, so the flat field is the fallback rather than an addition.
     """
     documents = [item for item in result.get("results", []) if isinstance(item, dict)]
     if documents:

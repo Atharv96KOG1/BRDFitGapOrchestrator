@@ -55,27 +55,20 @@ _FITMAP_TIMEOUT = timedelta(days=2)
 # given the same room as FitMap rather than the minutes its processing takes.
 _TESTCRAFT_TIMEOUT = timedelta(days=2)
 
-# The run cap is the hard kill switch. Temporal's run_timeout cannot be caught: it ends
-# the workflow with no result and takes the running child with it. It is here to reap a
-# wedged run and must never be what stops a healthy one, so it is added up from the
-# waits above rather than picked. Add a stage and the cap grows by that stage's timeout,
-# with nobody having to remember to widen it.
-#
-# Every run waits for the start question, so that one is always counted. After it comes
-# one of two routes, never both, so the cap takes the longer rather than the sum:
-#
-#   BRDGen route:    1 (start) + 3 (BRDGen) + 1 (continue?) + 2 (FitMap) = 7 days
-#   TestCraft route: 1 (start) + 2 (TestCraft)                           = 3 days
-#
-# _SLACK covers the gaps between stages - validating a result, raising a card, the calls
-# themselves. Those are minutes, not days, and do not grow when a stage does.
-#
-# 7 + 1 slack = 8 days. It was 7 before the start question: that question added a place
-# a user can sit for a day, so the cap grew by a day. That is the sum working, not a
-# separate decision.
+# The run cap is the uncatchable kill switch for a wedged run, so it is summed from the
+# waits above rather than picked: add a stage and it grows on its own. Every run waits
+# for the start question; after it comes one of two routes, never both, so take the
+# longer (BRDGen 1+3+1+2 = 7 days, TestCraft 1+2 = 3) plus _SLACK for the minutes
+# between stages. 8 days today.
 _SLACK = timedelta(days=1)
 _BRD_CHAIN = _BRD_TIMEOUT + _CONTINUE_TIMEOUT + _FITMAP_TIMEOUT
 _RUN_TIMEOUT = _START_TIMEOUT + max(_BRD_CHAIN, _TESTCRAFT_TIMEOUT) + _SLACK
+
+
+def _wait_text(limit: timedelta) -> str:
+    """How long a card waited, said in the same words as the constant above it."""
+    hours = round(limit.total_seconds() / 3600)
+    return "1 hour" if hours == 1 else f"{hours} hours"
 
 
 def _named_start_point(value: Any) -> str | None:
@@ -165,18 +158,9 @@ async def _run_fitmap(child_id: str, child_payload: dict[str, Any]) -> dict[str,
 def _new_child_id() -> str:
     """A bare uuid for a child run. Do not make this readable.
 
-    The platform creates a child agent run record only for a plain uuid, and the
-    child's human-input cards need that record to attach to. This mirrors how FitMap
-    starts its own interactive child: AetherionAgents/fit_gap_agent PR #22,
-    `_run_testcraft` - "A bare uuid: supernova gives only those a child agent_run,
-    which HITL cards need."
-
-    Confirmed the hard way here too. Version 0.0.2 used a derived id (`<parent>-brd`);
-    BRDGen started, its register_human_input_request activity failed three times, and
-    its upload card never reached the user, so the run hung with nothing on screen. A
-    bare uuid in 0.0.3 fixed it - run f764134c-c6d7-4d4a-95e2-78c3cf306aa2 shows all
-    three of BRDGen's cards arriving against child
-    61f57005-c84a-41d3-918e-cafbf2579843.
+    The platform creates a child agent run record only for a plain uuid, and the child's
+    human-input cards need that record to attach to; a derived id in 0.0.2 left BRDGen's
+    upload card undelivered and the run hung. FitMap's `_run_testcraft` does the same.
 
     workflow.uuid4 rather than uuid.uuid4: Temporal replays this function, and a
     non-deterministic id would produce a different child on replay.
@@ -190,19 +174,9 @@ async def _run_fitmap_only(
     """Analyse a BRD, regenerating nothing.
 
     With no document at all FitMap opens its own upload card, the same way BRDGen and
-    TestCraft collect their own inputs. Something supplied that is not a key is still
-    refused here: that is a caller's mistake, not a user with nothing to attach.
+    TestCraft collect their own inputs. `build_fitmap_payload` is the boundary guard
+    for anything supplied that is not a usable key.
     """
-    # These two guards no longer fire: _run_from checks the reference for every agent
-    # that receives one, before this is called. They stay as the boundary's own check,
-    # so a future caller cannot reach FitMap with something unusable, and that is why
-    # they are the uncovered lines in this module.
-    if brd_file_key is not None and not isinstance(brd_file_key, str):
-        return _response(
-            "invalid_input",
-            _with_notices("brd_file must be the storage key of an existing BRD document.", carried),
-            stage="fitgap",
-        )
     try:
         child_payload = build_fitmap_payload(brd_file_key, payload)
     except ValueError as exc:
@@ -243,17 +217,11 @@ async def _run_fitmap_only(
     }
 
 
-async def _run_testcraft_only(
-    payload: dict[str, Any], document: Any, carried: list[str]
-) -> dict[str, Any]:
+async def _run_testcraft_only(document: Any, carried: list[str]) -> dict[str, Any]:
     """Generate tests from a document the user already has, with no earlier stage.
 
-    "TestCraft" is a literal at the call site, which is what lets the platform map the
-    child's task queue. That is enough on its own: a live sbox/test run at 0.0.8 reached
-    TestCraft by name and came back with its workbook, so the orchestrator needs none of
-    the agents-table lookup FitMap does for the same child
-    (AetherionAgents/fit_gap_agent, src/tools/agent_lookup.py), and takes on no database
-    dependency for it.
+    The child is reached by name alone, verified live on sbox/test, so none of the
+    agents-table lookup FitMap does for the same child is needed here.
     """
     child_payload = build_testcraft_payload(document)
     testcraft_id = _new_child_id()
@@ -453,14 +421,9 @@ def _attached(value: Any) -> bool:
 def _unusable_notice(start_from: str, document: Any) -> str | None:
     """Why the attached document is not going to the chosen agent, or None if it is.
 
-    This is about the file type only. A document the agent cannot read is never fatal
-    and never forwarded: the agent opens its own upload card, and the user is told why
-    rather than left wondering where their file went. A reference that is malformed or
-    unsafe is a different thing - a caller's mistake, not a user's choice - and is
-    refused by the caller of this function before it is reached.
-
-    The accepted types are each child's own, read from its metadata and kept beside its
-    payload builder, which re-checks them as the boundary guard.
+    File type only, and never fatal: the agent opens its own upload card and the user is
+    told why, rather than left wondering where the file went. A malformed or unsafe
+    reference is a caller's mistake and is refused before this is reached.
     """
     if not _attached(document):
         return None
@@ -504,7 +467,7 @@ async def _run_from(start_from: str, payload: dict[str, Any], existing_brd: Any)
     if start_from == "TestCraft":
         # No file is required: TestCraft opens its own upload box when it is handed
         # none, the same way BRDGen collects its own inputs.
-        return await _run_testcraft_only(payload, document, carried)
+        return await _run_testcraft_only(document, carried)
     if start_from == "FitMap":
         # No document is required: FitMap asks for one itself when it is handed none.
         return await _run_fitmap_only(document, payload, carried)
@@ -575,7 +538,8 @@ async def _run_brdgen(payload: dict[str, Any], carried: list[str]) -> dict[str, 
         message = (
             "Stopping with the BRD, as you asked. FitMap was not started."
             if decision == "No"
-            else "No answer within 24 hours, so I stopped with the BRD. FitMap was not started."
+            else f"No answer within {_wait_text(_CONTINUE_TIMEOUT)}, so I stopped with the "
+            "BRD. FitMap was not started."
         )
         if notices:
             message += "\n\n" + "\n".join(notices)
@@ -643,8 +607,8 @@ async def orchestrator(payload: dict[str, Any]) -> dict[str, Any]:
             workflow.logger.info("No start point chosen: %s.", answer)
             return _response(
                 "cancelled",
-                "No answer within 24 hours, so nothing was started. Ask me again when "
-                "you know which agent you want to begin at."
+                f"No answer within {_wait_text(_START_TIMEOUT)}, so nothing was started. "
+                "Ask me again when you know which agent you want to begin at."
                 if answer == "timeout"
                 else "That answer was not one of the three agents, so nothing was "
                 "started. Ask me again and choose BRDGen, FitMap or TestCraft.",
