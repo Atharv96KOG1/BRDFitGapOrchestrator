@@ -326,3 +326,14 @@ async def test_the_start_card_explains_all_three_agents(no_children, ask):
     prompt = ask.await_args.args[0]
     for name in START_POINTS:
         assert f"**{name}**" in prompt
+
+
+async def test_the_orchestrator_speaks_in_the_third_person(no_children, ask):
+    """The start card and the closing message name the orchestrator, never "I" or "me"."""
+    ask.return_value = _Answer("BRDGen", action_type="cancel")
+    result = await agent_module.orchestrator.fn({"start_workflow": True})
+    prompt = ask.await_args.args[0]
+    assert "the BRD-FitGap Orchestrator" in prompt
+    for text in (prompt, result["message"]):
+        words = set(text.replace(",", " ").replace(".", " ").split())
+        assert not words & {"I", "me", "my", "I'll", "I've", "I'm"}

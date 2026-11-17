@@ -112,12 +112,12 @@ async def _ask_start_point() -> str:
     collide with a real answer.
     """
     response = await humanInput.request(
-        "I coordinate three agents. Which one do you want to start from?\n\n"
+        "Choose the agent the BRD-FitGap Orchestrator should start with:\n\n"
         "- **BRDGen** drafts a Business Requirements Document.\n"
         "- **FitMap** runs an Oracle fit-gap analysis on a BRD.\n"
         "- **TestCraft** generates test scenarios and scripts from a BRD or "
         "fit-gap document.\n\n"
-        "Each later agent runs only if you agree.",
+        "Each following agent runs only after you approve it.",
         request_type="input",
         fields=[
             _ChoiceField(
@@ -567,11 +567,12 @@ async def _run_brdgen(payload: dict[str, Any], carried: list[str]) -> dict[str, 
     if decision != "Yes":
         message = {
             "No": "Stopping with the BRD, as you asked. FitMap was not started.",
-            "cancelled": "You closed the card, so I stopped with the BRD. FitMap was not started.",
+            "cancelled": "You closed the card, so the run stopped with the BRD. FitMap was not "
+            "started.",
         }.get(
             decision,
-            f"No answer within {_wait_text(_CONTINUE_TIMEOUT)}, so I stopped with the "
-            "BRD. FitMap was not started.",
+            f"No answer within {_wait_text(_CONTINUE_TIMEOUT)}, so the run stopped "
+            "with the BRD. FitMap was not started.",
         )
         if notices:
             message += "\n\n" + "\n".join(notices)
@@ -619,15 +620,16 @@ async def orchestrator(payload: dict[str, Any]) -> dict[str, Any]:
     existing_brd = payload.get("brd_file")
     if not start:
         held = (
-            " I have the document you attached; FitMap or TestCraft can use it."
+            " The document you attached is kept; FitMap or TestCraft can use it."
             if _attached(existing_brd)
             else ""
         )
         return _response(
             "ready",
-            "I can start at BRDGen, which generates a BRD, at FitMap, which analyses one "
-            "against Oracle, or at TestCraft, which generates test scenarios and scripts. "
-            "Ask me to start and I will check which one you want." + held,
+            "The BRD-FitGap Orchestrator can begin at BRDGen, which generates a BRD; at "
+            "FitMap, which analyses a BRD against Oracle; or at TestCraft, which generates "
+            "test scenarios and scripts. Ask the orchestrator to start, and it will show a "
+            "card to choose the agent." + held,
             stage="start",
         )
 
@@ -641,13 +643,14 @@ async def orchestrator(payload: dict[str, Any]) -> dict[str, Any]:
                 "cancelled",
                 {
                     "timeout": f"No answer within {_wait_text(_START_TIMEOUT)}, so nothing "
-                    "was started. Ask me again when you know which agent you want to begin at.",
+                    "was started. Ask the orchestrator again when you are ready to choose an "
+                    "agent.",
                     "cancelled": "You cancelled the start card, so nothing was started. "
-                    "Ask me again whenever you want to begin.",
+                    "Ask the orchestrator again whenever you want to begin.",
                 }.get(
                     answer,
                     "That answer was not one of the three agents, so nothing was "
-                    "started. Ask me again and choose BRDGen, FitMap or TestCraft.",
+                    "started. Ask the orchestrator again and choose BRDGen, FitMap or TestCraft.",
                 ),
                 stage="start",
             )
